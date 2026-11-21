@@ -1,53 +1,98 @@
 
 """
-Web UI: python app.py
+PDF Data Extraction & Conversion Tool
+
+Run:
+    python app.py
 
 Routes:
-http://127.0.0.1:5000       -> PDF to Excel
-http://127.0.0.1:5000/csv   -> PDF to CSV
-http://127.0.0.1:5000/json  -> PDF to JSON
+    /          PDF to Excel
+    /csv       PDF to CSV
+    /json      PDF to JSON
+    /invoice   Invoice data extraction
 """
 
 import io
+import json
 import tempfile
 from pathlib import Path
 
 from flask import Flask, render_template, request, send_file
+from werkzeug.utils import secure_filename
 
 from pdfconverter import extract_pdf, write_excel
 from pdfconverter.to_csv import export_csv
 from pdfconverter.json_export import export_json
 from pdfconverter.to_excel import convert_value
+from pdfconverter.invoice import extract_invoice_data
+
 
 app = Flask(__name__)
-
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 
 def _read_pdf():
-    """Save uploaded PDF, extract data and return (doc, filename)."""
+    """Save uploaded PDF temporarily and extract its content."""
 
-    f = request.files.get("pdf")
+    uploaded = request.files.get("pdf")
 
-    if not f or not f.filename:
-        return ("Please upload a PDF file", 400), None
+    if not uploaded or not uploaded.filename:
+        return ("Please upload a PDF file.", 400), None
 
-    if not f.filename.lower().endswith(".pdf"):
-        return ("Please upload a valid .pdf file", 400), None
+    original_name = secure_filename(uploaded.filename)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "input.pdf"
-        f.save(src)
+    if not original_name or not original_name.lower().endswith(".pdf"):
+        return ("Please upload a valid PDF file.", 400), None
 
-        try:
-            doc = extract_pdf(str(src))
-        except Exception:
-            app.logger.exception("PDF extraction failed")
-            return ("Could not read PDF. It may be corrupt or encrypted.", 422), None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.pdf"
+            uploaded.save(source)
 
-    doc.filename = f.filename
+            doc = extract_pdf(str(source))
 
-    return doc, f.filename
+        doc.filename = original_name
+
+        # Extract common invoice fields from normal PDF text or OCR text.
+        doc.invoice_data = extract_invoice_data(doc.page_text)
+
+        return doc, original_name
+
+    except Exception:
+        app.logger.exception("PDF extraction failed")
+        return (
+            "Could not read this PDF. It may be corrupt, encrypted, "
+            "or unsupported.",
+            422
+        ), None
+
+
+def _format_preview_value(value):
+    converted = convert_value(value)[0]
+
+    if hasattr(converted, "strftime"):
+        return converted.strftime("%d-%m-%Y")
+
+    return converted
+
+
+def _build_tables_preview(doc):
+    """Build a limited preview without changing the complete export data."""
+
+    return [
+        {
+            "name": f"P{table.page}_Table{table.index}",
+            "page": table.page,
+            "header": table.header,
+            "rows": [
+                [_format_preview_value(cell) for cell in row]
+                for row in table.rows[:200]
+            ],
+            "raw": table.rows[:200],
+            "total_rows": len(table.rows)
+        }
+        for table in doc.tables
+    ]
 
 
 @app.get("/")
@@ -65,101 +110,148 @@ def json_page():
     return render_template("index.html", mode="json")
 
 
+@app.get("/invoice")
+def invoice_page():
+    return render_template("index.html", mode="invoice")
+
+
 @app.post("/preview")
 def preview():
     doc, name = _read_pdf()
 
     if name is None:
-        return doc
+        message, status = doc
+        return message, status
 
-    def fmt(c):
-        v = convert_value(c)[0]
-        return v.strftime("%d-%m-%Y") if hasattr(v, "strftime") else v
+    tables = _build_tables_preview(doc)
 
-    tables = [
-        {
-            "name": f"P{t.page}_Table{t.index}",
-            "header": t.header,
-            "rows": [
-                [fmt(c) for c in r]
-                for r in t.rows[:200]
-            ],
-            "raw": t.rows[:200],
-            "total_rows": len(t.rows)
-        }
-        for t in doc.tables
-    ]
+    ocr_pages = getattr(doc, "ocr_pages", [])
 
     return {
+        "filename": name,
         "pages": doc.page_count,
-        "tables": tables
+        "tables": tables,
+        "invoice": getattr(doc, "invoice_data", {}),
+        "ocr_used": bool(ocr_pages),
+        "ocr_pages": ocr_pages,
+        "document_type": (
+            "invoice"
+            if any(
+                doc.invoice_data.get(key)
+                for key in ("invoice_number", "total", "invoice_date")
+            )
+            else "document"
+        )
     }
 
 
 @app.post("/convert")
 def convert():
-    """Convert PDF to Excel."""
+    """Export extracted PDF data to Excel."""
 
     doc, name = _read_pdf()
 
     if name is None:
-        return doc
+        message, status = doc
+        return message, status
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "output.xlsx"
+        output = Path(tmp) / "output.xlsx"
 
         write_excel(
             doc,
-            str(out),
+            str(output),
             convert_types=request.form.get("raw") != "on"
         )
 
-        data = out.read_bytes()
+        data = output.read_bytes()
 
     return send_file(
         io.BytesIO(data),
         as_attachment=True,
         download_name=Path(name).stem + ".xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        )
     )
 
 
 @app.post("/convert-csv")
 def convert_csv():
-    """Convert PDF to CSV."""
+    """Export extracted PDF tables to CSV."""
 
     doc, name = _read_pdf()
 
     if name is None:
-        return doc
+        message, status = doc
+        return message, status
 
-    data, fname, mime = export_csv(doc, Path(name).stem)
+    data, filename, mimetype = export_csv(doc, Path(name).stem)
 
     return send_file(
         io.BytesIO(data),
         as_attachment=True,
-        download_name=fname,
-        mimetype=mime
+        download_name=filename,
+        mimetype=mimetype
     )
 
 
 @app.post("/convert-json")
 def convert_json():
-    """Convert PDF to structured JSON."""
+    """Export tables, page text and invoice fields to JSON."""
 
     doc, name = _read_pdf()
 
     if name is None:
-        return doc
+        message, status = doc
+        return message, status
 
-    data, fname, mime = export_json(doc, Path(name).stem)
+    data, filename, mimetype = export_json(doc, Path(name).stem)
 
     return send_file(
         io.BytesIO(data),
         as_attachment=True,
-        download_name=fname,
-        mimetype=mime
+        download_name=filename,
+        mimetype=mimetype
     )
+
+
+@app.post("/convert-invoice")
+def convert_invoice():
+    """Download extracted invoice fields as JSON."""
+
+    doc, name = _read_pdf()
+
+    if name is None:
+        message, status = doc
+        return message, status
+
+    invoice = {
+        "source_file": name,
+        "pages": doc.page_count,
+        "ocr_used": bool(getattr(doc, "ocr_pages", [])),
+        "ocr_pages": getattr(doc, "ocr_pages", []),
+        "invoice_data": getattr(doc, "invoice_data", {})
+    }
+
+    content = json.dumps(
+        invoice,
+        ensure_ascii=False,
+        indent=4
+    ).encode("utf-8")
+
+    return send_file(
+        io.BytesIO(content),
+        as_attachment=True,
+        download_name=Path(name).stem + "_invoice.json",
+        mimetype="application/json"
+    )
+
+
+@app.errorhandler(413)
+def file_too_large(_error):
+    return "File is too large. Maximum upload size is 50 MB.", 413
 
 
 if __name__ == "__main__":

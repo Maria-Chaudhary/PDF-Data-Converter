@@ -1,22 +1,24 @@
 
-"""Export extracted PDF tables and text to structured JSON."""
+"""Export extracted PDF tables, text, invoice data and OCR details."""
 from __future__ import annotations
 
 import json
 
-from .extract import ExtractedDocument, ExtractedTable
+from .extract import ExtractedDocument
 
 
-def table_to_json(t: ExtractedTable) -> dict:
-    """Convert one extracted table into structured JSON."""
+def table_to_json(table) -> dict:
     return {
-        "page": t.page,
-        "table_index": t.index,
-        "headers": t.header,
+        "page": table.page,
+        "table_index": table.index,
+        "headers": table.header,
         "rows": [
-            dict(zip(t.header, row))
-            for row in t.rows
-        ],
+            {
+                header: row[index] if index < len(row) else ""
+                for index, header in enumerate(table.header)
+            }
+            for row in table.rows
+        ]
     }
 
 
@@ -24,27 +26,24 @@ def export_json(
     doc: ExtractedDocument,
     base_name: str
 ) -> tuple[bytes, str, str]:
-    """Returns (file_bytes, download_filename, mimetype)."""
 
-    if doc.tables:
-        data = {
-            "document": base_name,
-            "total_tables": len(doc.tables),
-            "tables": [
-                table_to_json(table)
-                for table in doc.tables
-            ],
-            "page_text": doc.page_text,
-        }
-    else:
-        data = {
-            "document": base_name,
-            "total_tables": 0,
-            "tables": [],
-            "page_text": doc.page_text,
-        }
+    ocr_pages = getattr(doc, "ocr_pages", [])
 
-    json_content = json.dumps(
+    data = {
+        "document": base_name,
+        "page_count": doc.page_count,
+        "total_tables": len(doc.tables),
+        "ocr_used": bool(ocr_pages),
+        "ocr_pages": ocr_pages,
+        "tables": [
+            table_to_json(table)
+            for table in doc.tables
+        ],
+        "invoice_data": getattr(doc, "invoice_data", {}),
+        "page_text": doc.page_text
+    }
+
+    content = json.dumps(
         data,
         ensure_ascii=False,
         indent=4,
@@ -52,7 +51,8 @@ def export_json(
     )
 
     return (
-        json_content.encode("utf-8"),
+        content.encode("utf-8"),
         f"{base_name}.json",
         "application/json"
     )
+
