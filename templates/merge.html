@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+
+{% block title %}Merge PDFs{% endblock %}
+{% block heading %}Merge PDFs{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <div class="eyebrow">PDF tools</div>
+    <h1>Merge PDFs</h1>
+    <p class="subtitle">Combine several PDFs into a single document. Use the arrows to set the order.</p>
+</div>
+
+<section class="card">
+    <div class="card-head">
+        <span>1 · Add PDFs</span>
+        <span class="badge">Up to {{ max_files }} files · {{ max_file_mb }} MB each</span>
+    </div>
+    <div class="card-body">
+        <label class="drop" id="drop">
+            <div class="drop-icon">{{ icon("upload", 26) }}</div>
+            <strong id="dropTitle">Drag &amp; drop PDFs here</strong>
+            <span class="muted">or <span class="browse">browse your files</span></span>
+            <div class="drop-hints"><span>Add at least two files</span><span>Password-protected PDFs must be unlocked first</span></div>
+            <input class="sr-only" type="file" id="file" accept=".pdf,application/pdf" multiple>
+        </label>
+
+        <div class="overall" id="overall" hidden>
+            <div class="overall-top"><span id="overallLabel">Merging…</span><span id="overallPct">0%</span></div>
+            <div class="progress" id="overallBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+        </div>
+
+        <ul class="queue" id="list" aria-label="Files to merge"></ul>
+        <div id="listEmpty"></div>
+    </div>
+    <div class="card-foot">
+        <span class="muted" id="summary">No files yet</span>
+        <span style="flex:1"></span>
+        <button class="btn ghost" id="clear" disabled>Clear all</button>
+        <button class="btn" id="run" disabled>{{ icon("merge", 16) }} Merge PDFs</button>
+    </div>
+</section>
+
+<section class="card" id="resultCard" hidden>
+    <div class="card-body success-box" id="resultBody"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>window.PAGE = {{ {"mode": mode, "maxFileMb": max_file_mb, "maxFiles": max_files}|tojson }};</script>
+<script src="{{ url_for('static', filename='js/tools.js') }}"></script>
+{% endblock %}

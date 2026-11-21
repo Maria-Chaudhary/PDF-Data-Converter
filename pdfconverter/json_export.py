@@ -1,5 +1,4 @@
-
-"""Export extracted PDF tables, text, invoice data and OCR details."""
+"""Export extracted PDF tables, text, invoice data, OCR details and warnings."""
 from __future__ import annotations
 
 import json
@@ -27,20 +26,18 @@ def export_json(
     base_name: str
 ) -> tuple[bytes, str, str]:
 
-    ocr_pages = getattr(doc, "ocr_pages", [])
-
     data = {
         "document": base_name,
         "page_count": doc.page_count,
+        "document_kind": doc.kind,
         "total_tables": len(doc.tables),
-        "ocr_used": bool(ocr_pages),
-        "ocr_pages": ocr_pages,
-        "tables": [
-            table_to_json(table)
-            for table in doc.tables
-        ],
-        "invoice_data": getattr(doc, "invoice_data", {}),
-        "page_text": doc.page_text
+        "ocr_used": bool(doc.ocr_pages),
+        "ocr_pages": doc.ocr_pages,
+        "warnings": [w["message"] for w in doc.warnings],
+        "tables": [table_to_json(table) for table in doc.tables],
+        "invoice_data": doc.invoice_data,
+        "line_items": doc.invoice_line_items,
+        "page_text": doc.page_text,
     }
 
     content = json.dumps(
@@ -55,4 +52,3 @@ def export_json(
         f"{base_name}.json",
         "application/json"
     )
-

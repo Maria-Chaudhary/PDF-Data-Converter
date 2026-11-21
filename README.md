@@ -1,36 +1,54 @@
-<<<<<<< HEAD
-# PDF Converter — Step 1: PDF → Excel
+# DocuExtract: PDF Data Converter
+
+A Flask web app that extracts tables and invoice data from PDFs, reads scanned documents with OCR, and merges or splits PDFs.
 
 ## Setup
+
     pip install -r requirements.txt
 
-## Use
-**Command line**
+For scanned PDFs install the **Tesseract OCR** program too (the app works without it, but scanned pages are skipped with a warning):
 
-    python cli.py samples/sample.pdf -o result.xlsx
-    python cli.py report.pdf --pages 1,2      # only some pages
-    python cli.py report.pdf --raw            # keep every cell as text
+- Windows: https://github.com/UB-Mannheim/tesseract/wiki, then set `TESSERACT_CMD` to the `tesseract.exe` path if it is not on PATH
+- macOS: `brew install tesseract`
+- Linux: `sudo apt install tesseract-ocr`
 
-**Web app**
+## Run
 
-    python app.py        # open http://127.0.0.1:5000
+    python app.py        # http://127.0.0.1:5000
 
-## How it works
-1. `pdfconverter/extract.py` finds tables with pdfplumber (ruled tables first, then
-   whitespace-aligned fallback), cleans cells, detects headers, merges tables that
-   continue across pages.
-2. `pdfconverter/to_excel.py` writes one sheet per table plus a Summary sheet, converts
-   numbers/dates/percentages to real Excel values, styles headers, freezes panes, adds filters.
+## Features
 
-## Limits
-- Scanned (image) PDFs have no text layer; they need OCR (planned add-on).
-- Complex merged-cell tables may need tweaking.
+| Page | What it does |
+|------|--------------|
+| `/` | Dashboard: tools, recent conversions, privacy information |
+| `/excel` `/csv` `/json` | Convert tables to Excel, CSV or JSON (multiple tables get separate preview tabs) |
+| `/invoice` | Invoice number, dates, subtotal, discount, shipping, tax, total; editable fields, warnings, export to JSON or Excel |
+| `/batch` | Upload several PDFs, review each, download one ZIP (or one combined invoice workbook) |
+| `/merge` | Merge PDFs in a chosen order |
+| `/split` | Split into single pages or ranges, or extract pages into one PDF |
 
-## Roadmap
-- [ ] Step 2: PDF → CSV (reuse `extract_pdf`, ~10 lines)
-- [ ] Step 3: PDF → JSON (blocks, tables, bounding boxes like your Image 2)
-- [ ] OCR for scanned PDFs
-=======
-# PDF-Data-Converter
-A Python-based web application that extracts tabular data from PDF files and converts it into Excel, CSV, and JSON formats. It provides a simple interface to upload PDFs, preview extracted tables, and download converted files.
->>>>>>> 6979425f16243313705b62d0ace218ad39aaca27
+Every converter page also accepts several files at once, and has Copy text / Download .txt on the Text tab.
+
+## Error handling
+
+Corrupted, password-protected, empty, wrongly-named (for example a PNG renamed to .pdf) and oversized files each return a specific message. PDFs with only an *owner* password (print/copy restrictions) still open.
+
+## Configuration (environment variables)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MAX_FILE_MB` | 50 | Max size per uploaded file |
+| `MAX_PAGES` | 300 | Max pages per PDF for extraction |
+| `MAX_OCR_PAGES` | 25 | Max pages OCR'd per file |
+| `TESSERACT_CMD` | (PATH) | Path to the Tesseract executable |
+| `TESSERACT_LANG` | eng | OCR language(s), e.g. `eng+urd` |
+
+## Privacy
+
+Uploads are written to a temporary folder only while a request runs and are deleted immediately after. Nothing is stored in a database. Recent conversions (file names and counts only) are kept in the browser's local storage.
+
+## Notes and limits
+
+- Invoice extraction is rule-based pattern matching, not AI. Values are cross-checked (subtotal + tax = total) and unusual layouts will produce warnings. Always review important figures.
+- Tables on scanned pages cannot be rebuilt; OCR text and invoice fields are still extracted.
+- Command line: `python cli.py samples/sample.pdf -o result.xlsx`

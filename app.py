@@ -1,257 +1,278 @@
-
 """
-PDF Data Extraction & Conversion Tool
+DocuExtract - PDF data extraction & tools
 
 Run:
     python app.py
 
-Routes:
-    /          PDF to Excel
-    /csv       PDF to CSV
-    /json      PDF to JSON
-    /invoice   Invoice data extraction
+Pages:
+    /          Dashboard
+    /excel     PDF to Excel          /csv      PDF to CSV
+    /json      PDF to JSON           /invoice  Invoice extraction
+    /batch     Batch convert         /merge    Merge PDFs
+    /split     Split PDFs
+
+Privacy: uploads live in a temporary folder only while a request is being
+handled and are deleted straight afterwards. Nothing is written to a database.
 """
 
 import io
-import json
+import os
+import re
 import tempfile
 from pathlib import Path
 
-from flask import Flask, render_template, request, send_file
-from werkzeug.utils import secure_filename
+from flask import Flask, jsonify, render_template, request, send_file
+from werkzeug.exceptions import HTTPException
 
-from pdfconverter import extract_pdf, write_excel
-from pdfconverter.to_csv import export_csv
-from pdfconverter.json_export import export_json
-from pdfconverter.to_excel import convert_value
-from pdfconverter.invoice import extract_invoice_data
+from pdfconverter import extract_pdf
+from pdfconverter.errors import (
+    FileTooLargeError,
+    InvalidRequestError,
+    PDFProcessingError,
+    UnsupportedFileError,
+)
+from pdfconverter.export import build_export
+from pdfconverter.invoice import analyze_invoice, normalise_invoice, validate_invoice
+from pdfconverter.pdfcheck import validate_pdf
+from pdfconverter.tools import merge_pdfs, split_pdf
 
+MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "50"))
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "300"))
+MAX_BATCH_FILES = 20
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+# Whole request (a batch / merge can carry several files).
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_MB * MAX_BATCH_FILES * 1024 * 1024
 
 
-def _read_pdf():
-    """Save uploaded PDF temporarily and extract its content."""
-
-    uploaded = request.files.get("pdf")
-
-    if not uploaded or not uploaded.filename:
-        return ("Please upload a PDF file.", 400), None
-
-    original_name = secure_filename(uploaded.filename)
-
-    if not original_name or not original_name.lower().endswith(".pdf"):
-        return ("Please upload a valid PDF file.", 400), None
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "input.pdf"
-            uploaded.save(source)
-
-            doc = extract_pdf(str(source))
-
-        doc.filename = original_name
-
-        # Extract common invoice fields from normal PDF text or OCR text.
-        doc.invoice_data = extract_invoice_data(doc.page_text)
-
-        return doc, original_name
-
-    except Exception:
-        app.logger.exception("PDF extraction failed")
-        return (
-            "Could not read this PDF. It may be corrupt, encrypted, "
-            "or unsupported.",
-            422
-        ), None
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+def _clean_name(raw: str) -> str:
+    """Keep unicode (e.g. Urdu) file names; strip paths and unsafe characters."""
+    name = Path((raw or "").replace("\\", "/")).name
+    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", name).strip(" .")
+    return name
 
 
-def _format_preview_value(value):
-    converted = convert_value(value)[0]
+def _save_upload(storage, folder: str, index: int = 0):
+    """Save one uploaded file into `folder`. Returns (path, display_name)."""
+    if storage is None or not storage.filename:
+        raise InvalidRequestError("Please choose a PDF file.")
 
-    if hasattr(converted, "strftime"):
-        return converted.strftime("%d-%m-%Y")
+    name = _clean_name(storage.filename)
 
-    return converted
+    if not name.lower().endswith(".pdf"):
+        raise UnsupportedFileError("Only PDF files are supported.", filename=name)
 
+    if name.lower() == ".pdf":
+        name = "document.pdf"
 
-def _build_tables_preview(doc):
-    """Build a limited preview without changing the complete export data."""
+    path = Path(folder) / f"upload_{index}.pdf"
+    storage.save(path)
 
-    return [
-        {
-            "name": f"P{table.page}_Table{table.index}",
-            "page": table.page,
-            "header": table.header,
-            "rows": [
-                [_format_preview_value(cell) for cell in row]
-                for row in table.rows[:200]
-            ],
-            "raw": table.rows[:200],
-            "total_rows": len(table.rows)
-        }
-        for table in doc.tables
-    ]
+    if path.stat().st_size > MAX_FILE_MB * 1024 * 1024:
+        raise FileTooLargeError(
+            f"This file is larger than the {MAX_FILE_MB} MB limit.", filename=name
+        )
+
+    return path, name
 
 
+def _json_body() -> dict:
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise InvalidRequestError("Expected a JSON request body.")
+    return body
+
+
+def _file_response(data: bytes, name: str, mimetype: str, **headers):
+    response = send_file(
+        io.BytesIO(data), as_attachment=True, download_name=name, mimetype=mimetype
+    )
+    for key, value in headers.items():
+        response.headers[key] = str(value)
+    return response
+
+
+# --------------------------------------------------------------------------
+# pages
+# --------------------------------------------------------------------------
 @app.get("/")
-def index():
-    return render_template("index.html", mode="excel")
+def dashboard():
+    return render_template("dashboard.html", mode="dashboard")
 
 
-@app.get("/csv")
-def csv_page():
-    return render_template("index.html", mode="csv")
+def _converter(mode):
+    def view():
+        return render_template(
+            "index.html", mode=mode,
+            max_file_mb=MAX_FILE_MB, max_files=MAX_BATCH_FILES,
+        )
+    view.__name__ = f"{mode}_page"
+    return view
 
 
-@app.get("/json")
-def json_page():
-    return render_template("index.html", mode="json")
+for _mode in ("excel", "csv", "json", "invoice", "batch"):
+    app.add_url_rule(f"/{_mode}", f"{_mode}_page", _converter(_mode), methods=["GET"])
 
 
-@app.get("/invoice")
-def invoice_page():
-    return render_template("index.html", mode="invoice")
+@app.get("/merge")
+def merge_page():
+    return render_template("merge.html", mode="merge", max_file_mb=MAX_FILE_MB, max_files=MAX_BATCH_FILES)
+
+
+@app.get("/split")
+def split_page():
+    return render_template("split.html", mode="split", max_file_mb=MAX_FILE_MB)
+
+
+# --------------------------------------------------------------------------
+# API: inspect, preview, export
+# --------------------------------------------------------------------------
+@app.post("/info")
+def info():
+    """Cheap check used on drop: page count, size and early error detection."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path, name = _save_upload(request.files.get("pdf"), tmp)
+        try:
+            pages = validate_pdf(str(path))
+        except PDFProcessingError as exc:
+            exc.filename = name
+            raise
+        return jsonify(name=name, size=path.stat().st_size, pages=pages)
 
 
 @app.post("/preview")
 def preview():
-    doc, name = _read_pdf()
+    """Extract tables, text, OCR and invoice fields from one PDF."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path, name = _save_upload(request.files.get("pdf"), tmp)
+        try:
+            doc = extract_pdf(str(path), max_pages=MAX_PAGES)
+        except PDFProcessingError as exc:
+            exc.filename = name
+            raise
 
-    if name is None:
-        message, status = doc
-        return message, status
+    doc.filename = name
+    invoice = analyze_invoice(doc.page_text, doc.tables)
 
-    tables = _build_tables_preview(doc)
-
-    ocr_pages = getattr(doc, "ocr_pages", [])
-
-    return {
+    return jsonify({
         "filename": name,
         "pages": doc.page_count,
-        "tables": tables,
-        "invoice": getattr(doc, "invoice_data", {}),
-        "ocr_used": bool(ocr_pages),
-        "ocr_pages": ocr_pages,
-        "document_type": (
-            "invoice"
-            if any(
-                doc.invoice_data.get(key)
-                for key in ("invoice_number", "total", "invoice_date")
-            )
-            else "document"
-        )
-    }
+        "kind": doc.kind,
+        "ocr_available": doc.ocr_available,
+        "ocr_used": bool(doc.ocr_pages),
+        "ocr_pages": doc.ocr_pages,
+        "scanned_pages": doc.scanned_pages,
+        "warnings": doc.warnings,
+        "pages_detail": [
+            {**info_, "text": doc.page_text.get(info_["page"], "")}
+            for info_ in doc.page_info
+        ],
+        "tables": [
+            {
+                "name": f"P{t.page}_Table{t.index}",
+                "page": t.page,
+                "index": t.index,
+                "header": t.header,
+                "rows": t.rows,
+            }
+            for t in doc.tables
+        ],
+        "invoice": invoice["data"],
+        "line_items": invoice["line_items"],
+        "invoice_warnings": invoice["warnings"],
+        "invoice_missing": invoice["missing"],
+        "is_invoice": invoice["is_invoice"],
+    })
 
 
-@app.post("/convert")
-def convert():
-    """Export extracted PDF data to Excel."""
+@app.post("/invoice-check")
+def invoice_check():
+    """Re-validate invoice values after the user edits them."""
+    body = _json_body()
+    items = body.get("line_items") if isinstance(body.get("line_items"), list) else []
+    warnings, missing = validate_invoice(body.get("invoice"), items)
+    return jsonify(invoice=normalise_invoice(body.get("invoice")), warnings=warnings, missing=missing)
 
-    doc, name = _read_pdf()
 
-    if name is None:
-        message, status = doc
-        return message, status
+@app.post("/export")
+def export():
+    """Create a download from already-extracted data (one file or a batch)."""
+    body = _json_body()
+    files = body.get("files")
+
+    if not isinstance(files, list):
+        raise InvalidRequestError("Nothing to export.")
+
+    data, name, mimetype = build_export(files, str(body.get("format")), raw=bool(body.get("raw")))
+    return _file_response(data, name, mimetype)
+
+
+# --------------------------------------------------------------------------
+# API: merge & split
+# --------------------------------------------------------------------------
+@app.post("/merge-pdf")
+def merge_pdf():
+    uploads = [f for f in request.files.getlist("pdf") if f and f.filename]
+
+    if len(uploads) < 2:
+        raise InvalidRequestError("Add at least two PDFs to merge.")
+    if len(uploads) > MAX_BATCH_FILES:
+        raise InvalidRequestError(f"You can merge up to {MAX_BATCH_FILES} PDFs at once.")
 
     with tempfile.TemporaryDirectory() as tmp:
-        output = Path(tmp) / "output.xlsx"
+        items = []
+        for i, storage in enumerate(uploads):
+            path, name = _save_upload(storage, tmp, i)
+            items.append((name, str(path)))
 
-        write_excel(
-            doc,
-            str(output),
-            convert_types=request.form.get("raw") != "on"
-        )
+        data, pages = merge_pdfs(items)
 
-        data = output.read_bytes()
-
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name=Path(name).stem + ".xlsx",
-        mimetype=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        )
-    )
+    return _file_response(data, "merged.pdf", "application/pdf", **{"X-Pages": pages})
 
 
-@app.post("/convert-csv")
-def convert_csv():
-    """Export extracted PDF tables to CSV."""
+@app.post("/split-pdf")
+def split_pdf_route():
+    mode = request.form.get("mode", "")
+    spec = request.form.get("ranges", "")
 
-    doc, name = _read_pdf()
+    with tempfile.TemporaryDirectory() as tmp:
+        path, name = _save_upload(request.files.get("pdf"), tmp)
+        data, filename, mimetype, parts = split_pdf(str(path), name, mode, spec)
 
-    if name is None:
-        message, status = doc
-        return message, status
-
-    data, filename, mimetype = export_csv(doc, Path(name).stem)
-
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name=filename,
-        mimetype=mimetype
-    )
+    return _file_response(data, filename, mimetype, **{"X-Parts": parts})
 
 
-@app.post("/convert-json")
-def convert_json():
-    """Export tables, page text and invoice fields to JSON."""
-
-    doc, name = _read_pdf()
-
-    if name is None:
-        message, status = doc
-        return message, status
-
-    data, filename, mimetype = export_json(doc, Path(name).stem)
-
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name=filename,
-        mimetype=mimetype
-    )
-
-
-@app.post("/convert-invoice")
-def convert_invoice():
-    """Download extracted invoice fields as JSON."""
-
-    doc, name = _read_pdf()
-
-    if name is None:
-        message, status = doc
-        return message, status
-
-    invoice = {
-        "source_file": name,
-        "pages": doc.page_count,
-        "ocr_used": bool(getattr(doc, "ocr_pages", [])),
-        "ocr_pages": getattr(doc, "ocr_pages", []),
-        "invoice_data": getattr(doc, "invoice_data", {})
-    }
-
-    content = json.dumps(
-        invoice,
-        ensure_ascii=False,
-        indent=4
-    ).encode("utf-8")
-
-    return send_file(
-        io.BytesIO(content),
-        as_attachment=True,
-        download_name=Path(name).stem + "_invoice.json",
-        mimetype="application/json"
-    )
+# --------------------------------------------------------------------------
+# errors (always JSON so the UI can show a clear message)
+# --------------------------------------------------------------------------
+@app.errorhandler(PDFProcessingError)
+def handle_pdf_error(error):
+    return jsonify(error.to_dict()), error.status
 
 
 @app.errorhandler(413)
 def file_too_large(_error):
-    return "File is too large. Maximum upload size is 50 MB.", 413
+    return jsonify(
+        error=f"Upload too large. Each file can be up to {MAX_FILE_MB} MB "
+              f"and a batch up to {MAX_BATCH_FILES} files.",
+        code="file_too_large",
+    ), 413
+
+
+@app.errorhandler(Exception)
+def unexpected(error):
+    if isinstance(error, HTTPException):
+        return error
+
+    app.logger.exception("Unexpected error")
+    return jsonify(
+        error="Something went wrong while processing this file. "
+              "It may be damaged or use an unsupported feature.",
+        code="processing_failed",
+    ), 500
 
 
 if __name__ == "__main__":

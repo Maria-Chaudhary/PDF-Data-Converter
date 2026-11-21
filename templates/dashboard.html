@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <h1>Turn PDFs into clean, usable data</h1>
+        <p>Extract tables and invoice fields, read scanned documents with OCR, and merge or split PDFs. All in one place.</p>
+    </div>
+    <div class="hero-actions">
+        <a class="btn" href="/excel">{{ icon("upload", 16) }} Convert a PDF</a>
+        <a class="btn secondary" href="/invoice">Extract an invoice</a>
+    </div>
+</section>
+
+<div class="stats" id="stats" aria-label="Your activity in this browser">
+    <div class="stat"><b data-stat="conversions">0</b><span>Conversions</span></div>
+    <div class="stat"><b data-stat="pages">0</b><span>Pages processed</span></div>
+    <div class="stat"><b data-stat="invoices">0</b><span>Invoices exported</span></div>
+    <div class="stat"><b data-stat="ocr">0</b><span>Scanned PDFs read (OCR)</span></div>
+</div>
+
+<div class="section-head"><h2>Tools</h2></div>
+<div class="tool-grid">
+    <a class="tool" href="/excel"><div class="tool-icon">{{ icon("excel") }}</div><b>PDF to Excel</b><span>One formatted sheet per table, plus a summary.</span></a>
+    <a class="tool" href="/csv"><div class="tool-icon">{{ icon("csv") }}</div><b>PDF to CSV</b><span>Plain CSV files that open anywhere, including Urdu and accented text.</span></a>
+    <a class="tool" href="/json"><div class="tool-icon">{{ icon("json") }}</div><b>PDF to JSON</b><span>Tables, page text and invoice fields as structured data.</span></a>
+    <a class="tool" href="/invoice"><div class="tool-icon">{{ icon("invoice") }}</div><b>Invoice extraction</b><span>Subtotal, tax and total with checks, warnings and editable fields.</span></a>
+    <a class="tool" href="/batch"><div class="tool-icon">{{ icon("batch") }}</div><b>Batch convert</b><span>Process many PDFs together and download one ZIP or workbook.</span></a>
+    <a class="tool" href="/merge"><div class="tool-icon">{{ icon("merge") }}</div><b>Merge PDFs</b><span>Combine several PDFs into one, in the order you choose.</span></a>
+    <a class="tool" href="/split"><div class="tool-icon">{{ icon("split") }}</div><b>Split PDF</b><span>Split into single pages, page ranges, or extract selected pages.</span></a>
+</div>
+
+<div class="section-head">
+    <h2>Recent conversions</h2>
+    <button class="btn ghost sm" id="clearHistory" hidden>Clear history</button>
+</div>
+<section class="card">
+    <ul class="recent" id="recent"></ul>
+</section>
+
+<section class="card" id="privacy" aria-labelledby="privacyTitle">
+    <div class="card-body privacy-card">
+        <div class="p-icon">{{ icon("shield", 24) }}</div>
+        <div>
+            <h2 id="privacyTitle" style="font-size:17px">How your PDFs are handled</h2>
+            <ul>
+                <li><b>Temporary processing only.</b> An uploaded PDF is written to a temporary folder while it is being processed and deleted as soon as the request finishes.</li>
+                <li><b>Nothing is stored.</b> No PDF, extracted text or invoice data is saved in a database or kept on the server.</li>
+                <li><b>OCR runs on the server.</b> Scanned pages are read with Tesseract, so your documents are not sent to any third-party service.</li>
+                <li><b>Results live in your browser.</b> Extracted data stays on this page until you download it or leave. Recent conversions list file names and counts only, and are saved in this browser's local storage. Clear them any time.</li>
+            </ul>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const { $, esc, plural, fmtSize, timeAgo } = DX;
+    const list = DX.history.get();
+
+    // Stats
+    const ok = list.filter(e => e.status !== "failed");
+    const stats = {
+        conversions: ok.length,
+        pages: ok.reduce((n, e) => n + (e.pages || 0), 0),
+        invoices: ok.filter(e => String(e.format || "").startsWith("invoice")).length,
+        ocr: ok.filter(e => e.ocr).length,
+    };
+    document.querySelectorAll("[data-stat]").forEach(node => {
+        node.textContent = stats[node.dataset.stat].toLocaleString();
+    });
+
+    // Recent list
+    const recent = $("#recent");
+    if (!list.length) {
+        recent.innerHTML = `<li style="display:block"><div class="empty">
+            <div class="empty-icon">${DX.svg("file", 26)}</div>
+            <h3>No conversions yet</h3>
+            <p>Your recent conversions will appear here. Try converting a PDF to get started.</p>
+            <a class="btn sm" href="/excel" style="margin-top:14px">Convert your first PDF</a></div></li>`;
+        return;
+    }
+
+    $("#clearHistory").hidden = false;
+    const badge = status => ({
+        success: '<span class="badge good">Success</span>',
+        warning: '<span class="badge warn">With warnings</span>',
+        failed: '<span class="badge bad">Failed</span>',
+    }[status] || "");
+
+    recent.innerHTML = list.slice(0, 8).map(e => `
+        <li>
+            <div class="qicon" style="width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:var(--soft);color:var(--primary)">${DX.svg(e.status === "failed" ? "alert" : "file")}</div>
+            <div style="min-width:0">
+                <div class="qname">${esc(e.name)}</div>
+                <div class="qmeta"><span>${esc(e.tool)}</span>${e.pages ? `<span>${plural(e.pages, "page")}</span>` : ""}${e.size ? `<span>${fmtSize(e.size)}</span>` : ""}${e.ocr ? "<span>OCR</span>" : ""}</div>
+                ${e.note ? `<div class="qerr">${esc(e.note)}</div>` : ""}
+            </div>
+            <div class="when">${badge(e.status)}<div>${timeAgo(e.ts)}</div></div>
+        </li>`).join("");
+
+    $("#clearHistory").addEventListener("click", () => {
+        DX.history.clear();
+        location.reload();
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% from "_icons.html" import icon %}
+{%- set nav = [
+    ("dashboard", "/", "Dashboard", "home", "Overview"),
+    ("excel", "/excel", "PDF to Excel", "excel", "Convert"),
+    ("csv", "/csv", "PDF to CSV", "csv", "Convert"),
+    ("json", "/json", "PDF to JSON", "json", "Convert"),
+    ("invoice", "/invoice", "Invoice extraction", "invoice", "Convert"),
+    ("batch", "/batch", "Batch convert", "batch", "Convert"),
+    ("merge", "/merge", "Merge PDFs", "merge", "PDF tools"),
+    ("split", "/split", "Split PDF", "split", "PDF tools"),
+] -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}DocuExtract{% endblock %} · DocuExtract</title>
+<meta name="description" content="Extract tables and invoice data from PDFs, read scanned documents with OCR, merge and split PDFs.">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+
+<div class="app">
+
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+        <a class="brand" href="/">Docu<span>Extract</span></a>
+
+        <nav>
+            {% set ns = namespace(group="") %}
+            {% for key, href, label, ico, group in nav %}
+                {% if group != ns.group %}
+                    {% set ns.group = group %}
+                    <div class="nav-group">{{ group }}</div>
+                {% endif %}
+                <a href="{{ href }}" class="nav-link {{ 'on' if mode == key }}"
+                   {% if mode == key %}aria-current="page"{% endif %}>
+                    {{ icon(ico) }}<span>{{ label }}</span>
+                </a>
+            {% endfor %}
+        </nav>
+
+        <div class="side-privacy">
+            {{ icon("shield", 16) }}
+            <span>Files are processed temporarily and deleted right after. <a href="/#privacy">Privacy</a></span>
+        </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+
+    <div class="main-wrap">
+        <header class="topbar">
+            <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+                {{ icon("menu", 22) }}
+            </button>
+            <div class="topbar-title">{% block heading %}DocuExtract{% endblock %}</div>
+            <a class="privacy-pill" href="/#privacy">{{ icon("shield", 14) }} Private by design</a>
+        </header>
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer>DocuExtract · PDF data extraction &amp; tools</footer>
+    </div>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script src="{{ url_for('static', filename='js/common.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

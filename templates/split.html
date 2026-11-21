@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+
+{% block title %}Split PDF{% endblock %}
+{% block heading %}Split PDF{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <div class="eyebrow">PDF tools</div>
+    <h1>Split PDF</h1>
+    <p class="subtitle">Split a PDF into single pages or page ranges, or extract just the pages you need.</p>
+</div>
+
+<section class="card">
+    <div class="card-head">
+        <span>1 · Upload a PDF</span>
+        <span class="badge">PDF · up to {{ max_file_mb }} MB</span>
+    </div>
+    <div class="card-body">
+        <label class="drop" id="drop">
+            <div class="drop-icon">{{ icon("upload", 26) }}</div>
+            <strong id="dropTitle">Drag &amp; drop a PDF here</strong>
+            <span class="muted">or <span class="browse">browse your files</span></span>
+            <div class="drop-hints"><span>One PDF at a time</span></div>
+            <input class="sr-only" type="file" id="file" accept=".pdf,application/pdf">
+        </label>
+        <ul class="queue" id="fileInfo" aria-label="Selected file"></ul>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-head"><span>2 · Choose how to split</span></div>
+    <div class="card-body" id="splitBody"></div>
+    <div class="card-foot" id="splitFoot" hidden>
+        <span class="muted" id="splitSummary"></span>
+        <span style="flex:1"></span>
+        <button class="btn" id="run">{{ icon("split", 16) }} Split PDF</button>
+    </div>
+</section>
+
+<div class="overall" id="overall" hidden style="margin-top:18px">
+    <div class="overall-top"><span id="overallLabel">Splitting…</span><span id="overallPct">0%</span></div>
+    <div class="progress" id="overallBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+</div>
+
+<section class="card" id="resultCard" hidden>
+    <div class="card-body success-box" id="resultBody"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>window.PAGE = {{ {"mode": mode, "maxFileMb": max_file_mb}|tojson }};</script>
+<script src="{{ url_for('static', filename='js/tools.js') }}"></script>
+{% endblock %}
